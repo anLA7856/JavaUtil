@@ -1,4 +1,4 @@
-package com.blog.anla.sourceCode;
+package com.blog.anla.Collection.sourceCode;
 
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;

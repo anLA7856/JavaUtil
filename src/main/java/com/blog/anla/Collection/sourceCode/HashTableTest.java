@@ -1,4 +1,4 @@
-package com.blog.anla.sourceCode;
+package com.blog.anla.Collection.sourceCode;
 
 import java.io.*;
 import java.util.concurrent.ThreadLocalRandom;

@@ -1,4 +1,4 @@
-package com.blog.anla.sourceCode;
+package com.blog.anla.Collection.sourceCode;
 
 import java.util.Objects;
 import java.util.function.Function;
