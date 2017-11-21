@@ -17,6 +17,7 @@ import sun.misc.Unsafe;
  * 同步队列，负责管理线程状态，
  * AbstractOwnableSynchronizer，里面就一个线程exclusiveOwnerThread，
  * 供子类使用，因为针对线程的管理嘛。
+ * 子类主要通过对volatile变量state的操作去决定是否获取锁。然后再决定是否进入队列。
  * @author luoa
  *
  */
@@ -140,7 +141,7 @@ public abstract class AbstractQueuedSynchronizer
     private transient volatile Node tail;
 
     /**
-     * 同步器的状态。
+     * 同步器的状态。通过他来是否子类获取锁。
      */
     private volatile int state;
 
@@ -279,6 +280,7 @@ public abstract class AbstractQueuedSynchronizer
                 }
                 //如果标识为0，也就是在sync队列中等待获取锁的，那么久尝试把状态改为propagate。
                 //PROPAGATE，值为-3，表示当前场景下后续的acquireShared能够得以执行；
+                //失败就重新再来。
                 else if (ws == 0 &&
                          !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
                     continue;                // loop on failed CAS
@@ -314,37 +316,46 @@ public abstract class AbstractQueuedSynchronizer
 
     /**
      * 当获取不到就会取消
+     *一旦发生异常，导致获取锁失败，则会调用cancelAcquire()方法"Cancels an ongoing attempt to acquire"。
      *
+     *
+     *	node是tail
+     *	node是head
+     *	node既不是tail，又不是head
      * @param node the node
      */
     private void cancelAcquire(Node node) {
-        // 不存在就退出。
+        // Ignore if node doesn't exist
         if (node == null)
             return;
+        //1. node不再关联到任何线程
         node.thread = null;
-
-        // 跳过被cancell的几点，这些cancell节点就会被gc了。
+        //2. 跳过被cancel的前继node，找到一个有效的前继节点pred
+        // Skip cancelled predecessors
         Node pred = node.prev;
         while (pred.waitStatus > 0)
             node.prev = pred = pred.prev;
-
         // predNext is the apparent node to unsplice. CASes below will
         // fail if not, in which case, we lost race vs another cancel
         // or signal, so no further action is necessary.
         Node predNext = pred.next;
-
+        //3. 将node的waitStatus置为CANCELLED
         // Can use unconditional write instead of CAS here.
         // After this atomic step, other Nodes can skip past us.
         // Before, we are free of interference from other threads.
         node.waitStatus = Node.CANCELLED;
-
-        // 尾端节点则去除。
+        //4. 如果node是tail，更新tail为pred，并使pred.next指向null
+        // If we are the tail, remove ourselves.
         if (node == tail && compareAndSetTail(node, pred)) {
             compareAndSetNext(pred, predNext, null);
         } else {
             // If successor needs signal, try to set pred's next-link
             // so it will get one. Otherwise wake it up to propagate.
+            //
             int ws;
+            //5. 如果node既不是tail，又不是head的后继节点
+            //则将node的前继节点的waitStatus置为SIGNAL
+            //并使node的前继节点指向node的后继节点（相当于将node从队列中删掉了）
             if (pred != head &&
                 ((ws = pred.waitStatus) == Node.SIGNAL ||
                  (ws <= 0 && compareAndSetWaitStatus(pred, ws, Node.SIGNAL))) &&
@@ -353,12 +364,13 @@ public abstract class AbstractQueuedSynchronizer
                 if (next != null && next.waitStatus <= 0)
                     compareAndSetNext(pred, predNext, next);
             } else {
+            //6. 如果node是head的后继节点，则直接唤醒node的后继节点
                 unparkSuccessor(node);
             }
-
             node.next = node; // help GC
         }
     }
+
 
     /**
      * 获取失败就park。
@@ -392,7 +404,7 @@ public abstract class AbstractQueuedSynchronizer
     }
 
     /**
-     * 自己终端
+     * 自己中断
      */
     static void selfInterrupt() {
         Thread.currentThread().interrupt();
