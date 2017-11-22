@@ -45,7 +45,7 @@ public abstract class AbstractQueuedSynchronizer
         //多种Node状态
         /** 表示当前线程被取消 */
         static final int CANCELLED =  1;
-        /** 表示当前节点的后继节点要被运行，也就是unparking */
+        /** 表示当前节点的后继节点要被唤醒，也就是unparking */
         static final int SIGNAL    = -1;
         /** 表示当前节点在等待condition，也就是在condition队列中。 */
         static final int CONDITION = -2;
@@ -109,7 +109,7 @@ public abstract class AbstractQueuedSynchronizer
         }
 
         /**
-         * 直接是放入一个waiter队列。
+         * addwaiter使用。
          * @param thread
          * @param mode
          */
@@ -182,6 +182,7 @@ public abstract class AbstractQueuedSynchronizer
 
     /**
      * 节点入队操作。
+     * 插入到队尾
      * 返回插入时候的这个tail尾节点。
      */
     private Node enq(final Node node) {
@@ -217,6 +218,7 @@ public abstract class AbstractQueuedSynchronizer
                 return node;
             }
         }
+        //先尝试一次入队，如果失败，就用自旋方式入队。
         enq(node);
         return node;
     }
@@ -263,6 +265,8 @@ public abstract class AbstractQueuedSynchronizer
     /**
      * share模式下release。
      * 注意和exclusive模式下区别。
+     * 所以是阻塞式的，一直要等待h被设置为head时候，才跳出循环。
+     * 是signal，我就换为0，如果是0我就尝试换为propagate。
      */
     private void doReleaseShared() {
 
@@ -275,7 +279,7 @@ public abstract class AbstractQueuedSynchronizer
                 	//把其节点设为0这个动作失败，就重新检查，知道设置成功，
                     if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
                         continue;            // loop to recheck cases
-                    //设置状态0成功的同时，让继任节点走，唤醒继任者。
+                    //设置状态0成功的同时，让继任节点走，唤醒继任者。当吧当节点的signal信号变为0时候，就unpark，下一个。
                     unparkSuccessor(h);
                 }
                 //如果标识为0，也就是在sync队列中等待获取锁的，那么久尝试把状态改为propagate。
@@ -396,6 +400,7 @@ public abstract class AbstractQueuedSynchronizer
             pred.next = node;
         } else {
             /*
+             * condition或者 在sync，propagate
              * 设为signal。
              */
             compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
@@ -436,12 +441,14 @@ public abstract class AbstractQueuedSynchronizer
             boolean interrupted = false;
             for (;;) {
                 final Node p = node.predecessor();
+                //一直自旋，当头结点为head时候，然后就会去竞争锁，如果成功就把自己设置为头结点。
                 if (p == head && tryAcquire(arg)) {
                     setHead(node);
                     p.next = null; // help GC
                     failed = false;
                     return interrupted;
                 }
+                //如果一直获取不到，显然就会失败，所以就会挂起自己，每次都尝试去吧前一个节点设为signal，从而把自己挂起。。
                 if (shouldParkAfterFailedAcquire(p, node) &&
                     parkAndCheckInterrupt())
                     interrupted = true;
@@ -695,6 +702,8 @@ public abstract class AbstractQueuedSynchronizer
 
     /**
      * 释放排他锁。
+     * 首先tryRelese释放标记
+     * 然后，排它锁获取的肯定是head出现，此时我只要唤醒(unpack)继任线程就可以了。
      */
     public final boolean release(int arg) {
         if (tryRelease(arg)) {
@@ -773,6 +782,7 @@ public abstract class AbstractQueuedSynchronizer
 
     /**
      * 获取队列第一条线程。
+     * 有头结点就判断头结点，没有头结点，就从尾端一直找到头结点。
      * Version of getFirstQueuedThread called when fastpath fails
      */
     private Thread fullGetFirstQueuedThread() {
@@ -784,8 +794,6 @@ public abstract class AbstractQueuedSynchronizer
             ((h = head) != null && (s = h.next) != null &&
              s.prev == head && (st = s.thread) != null))
             return st;
-
-
         //审查不通过，那就从尾端开始
         Node t = tail;
         Thread firstThread = null;
@@ -957,11 +965,13 @@ public abstract class AbstractQueuedSynchronizer
     }
 
     /**
-     * 把状态设为0.
+     * 唤醒节点，状态改为0。
+     * 唤醒成功的话，就插入队尾并且如果此时队尾元素cancell或者强行设置队尾元素失败，那么就需要唤醒此时队尾元素。
      */
     final boolean transferForSignal(Node node) {
         /*
          * If cannot change waitStatus, the node has been cancelled.
+         * 设置成功了！
          */
         if (!compareAndSetWaitStatus(node, Node.CONDITION, 0))
             return false;
@@ -975,6 +985,7 @@ public abstract class AbstractQueuedSynchronizer
          */
         Node p = enq(node);
         int ws = p.waitStatus;
+        //检查前一个节点是否为signal。
         if (ws > 0 || !compareAndSetWaitStatus(p, ws, Node.SIGNAL))
             LockSupport.unpark(node.thread);
         return true;
@@ -985,7 +996,7 @@ public abstract class AbstractQueuedSynchronizer
      * 重新设为signal的唤醒状态了。
      */
     final boolean ransferAfterCancelledWait(Node node) {
-        if (compareAndSetWaitStatus(node, Node.CONDITION, 0)) {
+        if (compareAndSetWaitStatus(node, Node.CONDITION, 0)){
             enq(node);
             return true;
         }
@@ -1004,6 +1015,7 @@ public abstract class AbstractQueuedSynchronizer
 
     /**
      * 完全释放锁。
+     * ，释放不成功就会报错。
      */
     final int fullyRelease(Node node) {
         boolean failed = true;
